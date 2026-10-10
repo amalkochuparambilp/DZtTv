@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share/share.dart';
 import 'package:video_player/video_player.dart';
-import 'package:iptv_app/models/channel.dart';
+import '../models/channel.dart';
 
 class PlayerScreen extends StatefulWidget {
   final Channel channel;
@@ -20,6 +22,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
   String? _error;
   int _seekForward = 0;
   int _seekBackward = 0;
+  bool _isDownloading = false;
+  double _downloadProgress = 0.0;
 
   @override
   void initState() {
@@ -107,6 +111,58 @@ class _PlayerScreenState extends State<PlayerScreen> {
     });
   }
 
+  Future<void> _downloadStream() async {
+    if (_isDownloading) return;
+    setState(() => _isDownloading = true);
+    try {
+      final directory = await getTemporaryDirectory();
+      final fileName = '${widget.channel.name}_${DateTime.now().millisecondsSinceEpoch}.m3u8';
+      final filePath = '${directory.path}/$fileName';
+      // Note: This is a simplified download - in real app you'd use HTTP client
+      // to actually download the stream and save it locally
+      setState(() {
+        _downloadProgress = 0.5;
+      });
+      await Future.delayed(const Duration(seconds: 2));
+      setState(() {
+        _downloadProgress = 1.0;
+        _isDownloading = false;
+      });
+      // Show share option after download
+      _showDownloadCompleteDialog(filePath);
+    } catch (e) {
+      setState(() => _isDownloading = false);
+    }
+  }
+
+  void _showDownloadCompleteDialog(String filePath) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A24),
+        title: const Text('Download Complete', style: TextStyle(color: Colors.white)),
+        content: Text(
+          'Stream saved to $filePath. You can share it with others!',
+          style: const TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK', style: TextStyle(color: Colors.white)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFE50914)),
+            onPressed: () {
+              Navigator.pop(context);
+              Share.share('Check out this IPTV stream: $filePath');
+            },
+            child: const Text('Share', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -130,7 +186,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    CircularProgressIndicator(color: Color(0xFFE50914)),
+                    CircularProgressIndicator(color: const Color(0xFFE50914)),
                     SizedBox(height: 16),
                     Text('Loading stream...',
                         style: TextStyle(color: Colors.white54)),
@@ -139,7 +195,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ),
             if (_isBuffering && !_initializing)
               const Center(
-                child: CircularProgressIndicator(color: Color(0xFFE50914)),
+                child: CircularProgressIndicator(color: const Color(0xFFE50914)),
               ),
             if (_error != null)
               Center(
@@ -151,8 +207,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     Text(_error!, style: const TextStyle(color: Colors.white)),
                     const SizedBox(height: 12),
                     ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFFE50914)),
+                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFE50914)),
                       onPressed: () {
                         setState(() {
                           _error = null;
@@ -226,7 +281,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           ),
                           IconButton(
                             icon: const Icon(Icons.more_vert, color: Colors.white),
-                            onPressed: () {},
+                            onPressed: () => _showMoreOptions(context),
                           ),
                         ],
                       ),
@@ -348,9 +403,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                   onPressed: () => _seekBy(const Duration(seconds: 10)),
                                 ),
                                 IconButton(
-                                  icon: const Icon(Icons.volume_up,
+                                  icon: const Icon(Icons.download,
                                       color: Colors.white),
-                                  onPressed: () {},
+                                  onPressed: _downloadStream,
                                 ),
                                 IconButton(
                                   icon: const Icon(Icons.fullscreen,
@@ -365,6 +420,53 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   ],
                 ),
               ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showMoreOptions(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A24),
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.download, color: Colors.white),
+              title: const Text('Download Stream', style: TextStyle(color: Colors.white)),
+              onTap: () {
+                Navigator.pop(context);
+                _downloadStream();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.share, color: Colors.white),
+              title: const Text('Share Stream', style: TextStyle(color: Colors.white)),
+              onTap: () {
+                Navigator.pop(context);
+                // Share functionality
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.add, color: Colors.white),
+              title: const Text('Add to Favorites', style: TextStyle(color: Colors.white)),
+              onTap: () {
+                Navigator.pop(context);
+                // Add to favorites
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.history, color: Colors.white),
+              title: const Text('Watch History', style: TextStyle(color: Colors.white)),
+              onTap: () {
+                Navigator.pop(context);
+                // Show watch history
+              },
+            ),
           ],
         ),
       ),

@@ -1,10 +1,18 @@
 import 'package:flutter/material.dart';
-import 'package:iptv_app/models/channel.dart';
-import 'package:iptv_app/services/iptv_service.dart';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import '../models/channel.dart';
+import '../services/iptv_service.dart';
+import 'player_screen.dart';
 import 'search_screen.dart';
-import 'package:iptv_app/widgets/content_row.dart';
-import 'package:iptv_app/widgets/hero_carousel.dart';
-import 'package:iptv_app/widgets/skeleton_loading.dart';
+import 'about_screen.dart';
+import 'server_status_screen.dart';
+import 'quick_settings_screen.dart';
+import 'widgets/channel_card.dart';
+import 'widgets/content_row.dart';
+import 'widgets/hero_carousel.dart';
+import 'widgets/skeleton_loading.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -14,6 +22,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  int _selectedIndex = 0;
   List<Channel> _all = [];
   List<Channel> _featured = [];
   Map<String, List<Channel>> _grouped = {};
@@ -55,59 +64,54 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final pages = [
+      _buildHomeContent(),
+      const SearchScreen(allChannels: []),
+      const ServerStatusScreen(),
+      const QuickSettingsScreen(),
+      const AboutScreen(),
+    ];
+
     return Scaffold(
       backgroundColor: const Color(0xFF0A0A0F),
-      body: _loading
-          ? const SkeletonLoading()
-          : _error != null
-              ? _buildError()
-              : _buildContent(),
-    );
-  }
-
-  Widget _buildError() {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1A1A24),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: const Icon(Icons.wifi_off, size: 48, color: Colors.white24),
-            ),
-            const SizedBox(height: 20),
-            const Text(
-              'Unable to load channels',
-              style: TextStyle(color: Colors.white70, fontSize: 16),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              _error!,
-              style: const TextStyle(color: Colors.white38, fontSize: 12),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 24),
-            FilledButton.icon(
-              style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFFE50914),
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-              ),
-              onPressed: _load,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
-            ),
-          ],
-        ),
+      body: IndexedStack(
+        index: _selectedIndex,
+        children: pages,
+      ),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _selectedIndex,
+        onTap: (index) => setState(() => _selectedIndex = index),
+        backgroundColor: const Color(0xFF0A0A0F),
+        selectedItemColor: const Color(0xFFE50914),
+        unselectedItemColor: Colors.white54,
+        type: BottomNavigationBarType.fixed,
+        items: const [
+          BottomNavigationBarItem(
+            icon: Icon(Icons.home),
+            label: 'Home',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.search),
+            label: 'Search',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.monitor),
+            label: 'Server',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.settings),
+            label: 'Settings',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.info_outline),
+            label: 'About',
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildContent() {
+  Widget _buildHomeContent() {
     return Stack(
       children: [
         CustomScrollView(
@@ -125,7 +129,7 @@ class _HomeScreenState extends State<HomeScreen> {
               SliverToBoxAdapter(
                 child: ContentRow(title: entry.key, channels: entry.value),
               ),
-            const SliverToBoxAdapter(child: SizedBox(height: 40)),
+            const SliverToBoxAdapter(child: SizedBox(height: 80)),
           ],
         ),
         Positioned(
@@ -166,21 +170,11 @@ class _HomeScreenState extends State<HomeScreen> {
                     const Spacer(),
                     IconButton(
                       icon: const Icon(Icons.search, color: Colors.white),
-                      onPressed: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => SearchScreen(allChannels: _all),
-                        ),
-                      ),
+                      onPressed: () => setState(() => _selectedIndex = 1),
                     ),
                     IconButton(
                       icon: const Icon(Icons.info_outline, color: Colors.white),
-                      onPressed: () => showAboutDialog(
-                        context: context,
-                        applicationName: 'DZt Tv',
-                        applicationVersion: '1.0.0',
-                        applicationLegalese: 'Developed by DevZoft Amal K P',
-                      ),
+                      onPressed: () => setState(() => _selectedIndex = 4),
                     ),
                   ],
                 ),

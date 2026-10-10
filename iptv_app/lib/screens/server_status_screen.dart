@@ -195,6 +195,7 @@ class _ServerStatusScreenState extends State<ServerStatusScreen> {
       ),
     );
     Future.delayed(const Duration(seconds: 2), () {
+      if (!mounted) return;
       setState(() {
         _servers[3]['status'] = 'online';
         _servers[3]['latency'] = 150;

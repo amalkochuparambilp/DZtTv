@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
 
-class QuickSettingsScreen extends StatelessWidget {
+class QuickSettingsScreen extends StatefulWidget {
   const QuickSettingsScreen({super.key});
 
+  @override
+  State<QuickSettingsScreen> createState() => _QuickSettingsScreenState();
+}
+
+class _QuickSettingsScreenState extends State<QuickSettingsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -142,7 +147,7 @@ class QuickSettingsScreen extends StatelessWidget {
           Switch(
             value: value,
             onChanged: (_) => _showComingSoonDialog('Toggle $title'),
-            activeColor: const Color(0xFFE50914),
+            activeThumbColor: const Color(0xFFE50914),
           ),
         ],
       ),

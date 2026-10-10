@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:iptv_app/screens/home_screen.dart';
+import 'package:iptv_app/screens/splash_screen.dart';
 
 void main() {
   runApp(const DevZoftIptvApp());
@@ -22,7 +23,11 @@ class DevZoftIptvApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const HomeScreen(),
+      initialRoute: '/',
+      routes: {
+        '/': (context) => const SplashScreen(),
+        '/home': (context) => const HomeScreen(),
+      },
     );
   }
 }

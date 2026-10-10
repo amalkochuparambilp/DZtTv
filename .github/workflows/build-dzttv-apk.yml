@@ -8,6 +8,9 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-apk:
     name: Build dzttv.apk
@@ -31,7 +34,7 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: stable
-          flutter-version: "3.47.x"
+          flutter-version: "3.47.7"
           cache: true
 
       - name: Flutter version
@@ -40,9 +43,11 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Analyze (non-blocking)
-        run: flutter analyze || echo "analyze found issues, continuing..."
-        continue-on-error: true
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Run tests
+        run: flutter test
 
       - name: Build release APK
         run: flutter build apk --release

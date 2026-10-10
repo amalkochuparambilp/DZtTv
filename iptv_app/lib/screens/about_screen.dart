@@ -227,7 +227,7 @@ class AboutScreen extends StatelessWidget {
                 const Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
+                    Text(
                       'DevZoft Amal K P',
                       style: TextStyle(
                         color: Colors.white,
@@ -235,7 +235,7 @@ class AboutScreen extends StatelessWidget {
                         fontWeight: FontWeight.w600,
                       ),
                     ),
-                    const Text(
+                    Text(
                       'Senior Flutter Developer',
                       style: TextStyle(color: Colors.white38, fontSize: 12),
                     ),
@@ -348,6 +348,6 @@ class AboutScreen extends StatelessWidget {
 
   void _openUrl(String url) {
     // TODO: Implement URL opening (could use url_launcher)
-    print('Opening: $url');
+    debugPrint('Opening: $url');
   }
 }

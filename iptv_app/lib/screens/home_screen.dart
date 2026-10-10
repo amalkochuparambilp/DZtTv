@@ -1,18 +1,13 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import '../models/channel.dart';
 import '../services/iptv_service.dart';
-import 'player_screen.dart';
 import 'search_screen.dart';
 import 'about_screen.dart';
 import 'server_status_screen.dart';
 import 'quick_settings_screen.dart';
-import 'widgets/channel_card.dart';
-import 'widgets/content_row.dart';
-import 'widgets/hero_carousel.dart';
-import 'widgets/skeleton_loading.dart';
+import '../widgets/content_row.dart';
+import '../widgets/hero_carousel.dart';
+import '../widgets/skeleton_loading.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -66,7 +61,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final pages = [
       _buildHomeContent(),
-      const SearchScreen(allChannels: []),
+      SearchScreen(allChannels: _all),
       const ServerStatusScreen(),
       const QuickSettingsScreen(),
       const AboutScreen(),
@@ -112,6 +107,47 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildHomeContent() {
+    if (_loading) {
+      return const SkeletonLoading();
+    }
+    if (_error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.wifi_off, color: Color(0xFFE50914), size: 64),
+              const SizedBox(height: 16),
+              const Text(
+                'Unable to load channels',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                _error!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white54, fontSize: 13),
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton.icon(
+                onPressed: _load,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Retry'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFE50914),
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     return Stack(
       children: [
         CustomScrollView(

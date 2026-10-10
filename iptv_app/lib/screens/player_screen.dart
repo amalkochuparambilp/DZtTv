@@ -23,7 +23,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
   int _seekForward = 0;
   int _seekBackward = 0;
   bool _isDownloading = false;
-  double _downloadProgress = 0.0;
 
   @override
   void initState() {
@@ -120,18 +119,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
       final filePath = '${directory.path}/$fileName';
       // Note: This is a simplified download - in real app you'd use HTTP client
       // to actually download the stream and save it locally
-      setState(() {
-        _downloadProgress = 0.5;
-      });
       await Future.delayed(const Duration(seconds: 2));
+      if (!mounted) return;
       setState(() {
-        _downloadProgress = 1.0;
         _isDownloading = false;
       });
       // Show share option after download
       _showDownloadCompleteDialog(filePath);
     } catch (e) {
-      setState(() => _isDownloading = false);
+      if (mounted) setState(() => _isDownloading = false);
     }
   }
 
@@ -186,7 +182,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    CircularProgressIndicator(color: const Color(0xFFE50914)),
+                    CircularProgressIndicator(color: Color(0xFFE50914)),
                     SizedBox(height: 16),
                     Text('Loading stream...',
                         style: TextStyle(color: Colors.white54)),
@@ -195,7 +191,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ),
             if (_isBuffering && !_initializing)
               const Center(
-                child: CircularProgressIndicator(color: const Color(0xFFE50914)),
+                child: CircularProgressIndicator(color: Color(0xFFE50914)),
               ),
             if (_error != null)
               Center(

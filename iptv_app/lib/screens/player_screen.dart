@@ -93,14 +93,6 @@ class _PlayerScreenState extends State<PlayerScreen>
       if (!mounted || generation != _loadGeneration) return;
       setState(() => _initializing = false);
     } catch (e) {
-      if (e is TimeoutException) {
-        unawaited(
-          initialization.then<void>(
-            (_) => _releaseController(controller),
-            onError: (Object _) => _releaseController(controller),
-          ),
-        );
-      }
       if (generation != _loadGeneration) {
         await _releaseController(controller);
         return;
@@ -111,6 +103,8 @@ class _PlayerScreenState extends State<PlayerScreen>
         _initializing = false;
         _error = e is TimeoutException
             ? 'The stream did not start in time. Check your connection and retry.'
+            : e is PlatformException && e.message != null
+            ? 'Playback failed: ${e.message}'
             : 'Could not start this stream. It may be unavailable or unsupported.';
       });
     }
@@ -169,6 +163,7 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   void _showPlaybackError(String? description) {
     if (!mounted || _error != null) return;
+    final wasInitializing = _initializing;
     _bufferingTimer?.cancel();
     _bufferingTimer = null;
     setState(() {
@@ -179,7 +174,7 @@ class _PlayerScreenState extends State<PlayerScreen>
           : 'Playback failed: $description';
     });
     final controller = _controller;
-    if (controller != null && !_initializing) {
+    if (controller != null && !wasInitializing) {
       unawaited(_releaseController(controller));
     }
   }
@@ -319,6 +314,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       _showPlaybackError(error.toString());
       return;
     }
+    if (!mounted) return;
     setState(() {
       if (duration.isNegative) {
         _seekBackward = duration.inSeconds.abs();

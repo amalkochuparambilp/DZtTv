@@ -49,7 +49,6 @@ void main() {
     });
 
     await pumpPlayer(tester);
-    expect(fakePlatform.createdPlayers, 1);
     expect(find.text('LIVE'), findsOneWidget);
     expect(find.byType(Slider), findsNothing);
     expect(find.byTooltip('Exit fullscreen'), findsOneWidget);

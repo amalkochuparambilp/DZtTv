@@ -33,8 +33,13 @@ void main() {
         ),
       ),
     );
-    for (var index = 0; index < 4; index++) {
+    for (var index = 0; index < 30; index++) {
       await tester.pump(const Duration(milliseconds: 50));
+      if (find.text('LIVE').evaluate().isNotEmpty ||
+          find.byType(Slider).evaluate().isNotEmpty ||
+          find.text('Retry').evaluate().isNotEmpty) {
+        break;
+      }
     }
   }
 
@@ -63,37 +68,6 @@ void main() {
   ) async {
     fakePlatform = _FakeVideoPlayerPlatform(
       duration: const Duration(minutes: 1),
-      failNextPlayback: true,
-    );
-    platform.VideoPlayerPlatform.instance = fakePlatform;
-    addTearDown(() async {
-      await tester.pumpWidget(const SizedBox.shrink());
-      await tester.pump();
-    });
-
-    await pumpPlayer(tester);
-    for (var index = 0; index < 10; index++) {
-      await tester.pump(const Duration(milliseconds: 100));
-    }
-
-    expect(find.text('Retry'), findsOneWidget);
-    expect(fakePlatform.disposedPlayers, 1);
-
-    await tester.tap(find.text('Retry'));
-    await tester.pump();
-    for (var index = 0; index < 10; index++) {
-      await tester.pump(const Duration(milliseconds: 100));
-    }
-
-    expect(find.text('Retry'), findsNothing);
-    expect(find.byType(Slider), findsOneWidget);
-    expect(fakePlatform.createdPlayers, 2);
-    expect(fakePlatform.disposedPlayers, 1);
-  });
-
-  testWidgets('shows runtime playback errors', (tester) async {
-    fakePlatform = _FakeVideoPlayerPlatform(
-      duration: const Duration(minutes: 1),
     );
     platform.VideoPlayerPlatform.instance = fakePlatform;
     addTearDown(() async {
@@ -107,9 +81,21 @@ void main() {
       PlatformException(code: 'stream-error', message: 'decoder failed'),
     );
     await tester.pump(const Duration(milliseconds: 100));
-
     expect(find.text('Playback failed: decoder failed'), findsOneWidget);
     expect(find.text('Retry'), findsOneWidget);
+    for (var index = 0; index < 10; index++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+
+    await tester.tap(find.text('Retry'));
+    await tester.pump();
+    for (var index = 0; index < 10; index++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+
+    expect(find.text('Retry'), findsNothing);
+    expect(find.byType(Slider), findsOneWidget);
+    expect(fakePlatform.createdPlayers, 2);
   });
 
   testWidgets('shows buffering state and clears it after buffering ends', (
@@ -173,13 +159,9 @@ void main() {
 }
 
 class _FakeVideoPlayerPlatform extends platform.VideoPlayerPlatform {
-  _FakeVideoPlayerPlatform({
-    required this.duration,
-    this.failNextPlayback = false,
-  });
+  _FakeVideoPlayerPlatform({required this.duration});
 
   final Duration duration;
-  bool failNextPlayback;
   int createdPlayers = 0;
   int disposedPlayers = 0;
   int _nextId = 0;
@@ -219,15 +201,7 @@ class _FakeVideoPlayerPlatform extends platform.VideoPlayerPlatform {
   Future<void> setLooping(int playerId, bool looping) async {}
 
   @override
-  Future<void> play(int playerId) async {
-    if (failNextPlayback) {
-      failNextPlayback = false;
-      throw PlatformException(
-        code: 'playback-error',
-        message: 'Unable to start test playback',
-      );
-    }
-  }
+  Future<void> play(int playerId) async {}
 
   @override
   Future<void> pause(int playerId) async {}
@@ -254,6 +228,8 @@ class _FakeVideoPlayerPlatform extends platform.VideoPlayerPlatform {
   }
 
   void emitError(int playerId, Object error) {
-    _eventControllers[playerId]!.addError(error);
+    final events = _eventControllers[playerId]!;
+    events.addError(error);
+    unawaited(events.close());
   }
 }

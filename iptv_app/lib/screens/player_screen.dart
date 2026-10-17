@@ -163,7 +163,6 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   void _showPlaybackError(String? description) {
     if (!mounted || _error != null) return;
-    final wasInitializing = _initializing;
     _bufferingTimer?.cancel();
     _bufferingTimer = null;
     setState(() {
@@ -174,7 +173,7 @@ class _PlayerScreenState extends State<PlayerScreen>
           : 'Playback failed: $description';
     });
     final controller = _controller;
-    if (controller != null && !wasInitializing) {
+    if (controller != null) {
       unawaited(_releaseController(controller));
     }
   }
@@ -198,9 +197,14 @@ class _PlayerScreenState extends State<PlayerScreen>
       await controller.dispose();
     } else if (initialization != null) {
       unawaited(
-        initialization.then<void>((_) async {
-          if (_hasPlatformPlayer(controller)) await controller.dispose();
-        }, onError: (Object _) {}),
+        initialization.then<void>(
+          (_) async {
+            if (_hasPlatformPlayer(controller)) await controller.dispose();
+          },
+          onError: (Object _) async {
+            if (_hasPlatformPlayer(controller)) await controller.dispose();
+          },
+        ),
       );
     }
   }

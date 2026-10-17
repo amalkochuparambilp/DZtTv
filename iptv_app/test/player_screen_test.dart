@@ -64,7 +64,7 @@ void main() {
   ) async {
     fakePlatform = _FakeVideoPlayerPlatform(
       duration: const Duration(minutes: 1),
-      failNextInitialization: true,
+      failNextPlayback: true,
     );
     platform.VideoPlayerPlatform.instance = fakePlatform;
     addTearDown(() async {
@@ -77,8 +77,8 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
     }
 
-    expect(find.textContaining('Could not start this stream'), findsOneWidget);
-    expect(fakePlatform.disposedPlayers, 0);
+    expect(find.text('Retry'), findsOneWidget);
+    expect(fakePlatform.disposedPlayers, 1);
 
     await tester.tap(find.text('Retry'));
     await tester.pump();
@@ -89,7 +89,7 @@ void main() {
     expect(find.text('Retry'), findsNothing);
     expect(find.byType(Slider), findsOneWidget);
     expect(fakePlatform.createdPlayers, 2);
-    expect(fakePlatform.disposedPlayers, 0);
+    expect(fakePlatform.disposedPlayers, 1);
   });
 
   testWidgets('shows runtime playback errors', (tester) async {
@@ -176,11 +176,11 @@ void main() {
 class _FakeVideoPlayerPlatform extends platform.VideoPlayerPlatform {
   _FakeVideoPlayerPlatform({
     required this.duration,
-    this.failNextInitialization = false,
+    this.failNextPlayback = false,
   });
 
   final Duration duration;
-  bool failNextInitialization;
+  bool failNextPlayback;
   int createdPlayers = 0;
   int disposedPlayers = 0;
   int _nextId = 0;
@@ -190,15 +190,11 @@ class _FakeVideoPlayerPlatform extends platform.VideoPlayerPlatform {
   Future<void> init() async {}
 
   @override
+  Future<void> setMixWithOthers(bool mixWithOthers) async {}
+
+  @override
   Future<int?> createWithOptions(platform.VideoCreationOptions options) async {
     createdPlayers++;
-    if (failNextInitialization) {
-      failNextInitialization = false;
-      throw PlatformException(
-        code: 'initialization-error',
-        message: 'Unable to initialize test stream',
-      );
-    }
     final id = ++_nextId;
     _eventControllers[id] = StreamController<platform.VideoEvent>.broadcast();
     return id;
@@ -224,7 +220,15 @@ class _FakeVideoPlayerPlatform extends platform.VideoPlayerPlatform {
   Future<void> setLooping(int playerId, bool looping) async {}
 
   @override
-  Future<void> play(int playerId) async {}
+  Future<void> play(int playerId) async {
+    if (failNextPlayback) {
+      failNextPlayback = false;
+      throw PlatformException(
+        code: 'playback-error',
+        message: 'Unable to start test playback',
+      );
+    }
+  }
 
   @override
   Future<void> pause(int playerId) async {}

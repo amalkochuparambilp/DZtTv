@@ -1,8 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
+
 import '../models/channel.dart';
 
 class PlayerScreen extends StatefulWidget {
@@ -14,19 +16,27 @@ class PlayerScreen extends StatefulWidget {
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
 
-class _PlayerScreenState extends State<PlayerScreen> {
-  late VideoPlayerController _controller;
+class _PlayerScreenState extends State<PlayerScreen>
+    with WidgetsBindingObserver {
+  VideoPlayerController? _controller;
+  final Map<VideoPlayerController, VoidCallback> _controllerListeners = {};
+  final Map<VideoPlayerController, Future<void>> _initializations = {};
   bool _initializing = true;
   bool _showControls = true;
   bool _isBuffering = false;
+  bool _isFullscreen = true;
+  bool _wasPlayingBeforePause = false;
   String? _error;
   int _seekForward = 0;
   int _seekBackward = 0;
-  bool _isDownloading = false;
+  int _loadGeneration = 0;
+  Timer? _bufferingTimer;
+  bool _retrying = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.landscapeLeft,
       DeviceOrientation.landscapeRight,
@@ -36,44 +46,247 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> _initPlayer() async {
+    final generation = ++_loadGeneration;
     final headers = <String, String>{
-      'User-Agent': widget.channel.userAgent ??
-          'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+      'User-Agent': widget.channel.userAgent ?? 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
     };
-    if (widget.channel.referer != null) {
-      headers['Referer'] = widget.channel.referer!;
+    final referer = widget.channel.referer;
+    if (referer != null && referer.isNotEmpty) {
+      headers['Referer'] = referer;
     }
-    _controller = VideoPlayerController.networkUrl(
-      Uri.parse(widget.channel.url),
+    final uri = Uri.tryParse(widget.channel.url);
+    if (uri == null ||
+        (uri.scheme != 'http' && uri.scheme != 'https') ||
+        uri.host.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _initializing = false;
+          _error = 'This channel has an invalid stream URL.';
+        });
+      }
+      return;
+    }
+
+    final controller = VideoPlayerController.networkUrl(
+      uri,
       httpHeaders: headers,
+      videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
     );
-    _controller.addListener(_onControllerUpdate);
+    _controller = controller;
+    void onControllerUpdate() => _onControllerUpdate(controller);
+    _controllerListeners[controller] = onControllerUpdate;
+    controller.addListener(onControllerUpdate);
+    final initialization = controller.initialize();
+    _initializations[controller] = initialization;
     try {
-      await _controller.initialize();
-      _controller.play();
+      await initialization.timeout(const Duration(seconds: 30));
+      if (!mounted || generation != _loadGeneration) {
+        await _releaseController(controller);
+        return;
+      }
+      if (controller.value.hasError) {
+        throw StateError(
+          controller.value.errorDescription ?? 'Unknown player error',
+        );
+      }
+      await controller.play();
+      if (!mounted || generation != _loadGeneration) return;
       setState(() => _initializing = false);
     } catch (e) {
+      if (e is TimeoutException) {
+        unawaited(
+          initialization.then<void>(
+            (_) => _releaseController(controller),
+            onError: (Object _) => _releaseController(controller),
+          ),
+        );
+      }
+      if (generation != _loadGeneration) {
+        await _releaseController(controller);
+        return;
+      }
+      await _releaseController(controller);
+      if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _initializing = false;
-        _error = 'Could not load stream';
+        _error = e is TimeoutException
+            ? 'The stream did not start in time. Check your connection and retry.'
+            : 'Could not start this stream. It may be unavailable or unsupported.';
       });
     }
   }
 
-  void _onControllerUpdate() {
-    if (!mounted) return;
-    final isBuffering = _controller.value.isBuffering;
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final controller = _controller;
+    if (state == AppLifecycleState.paused) {
+      _wasPlayingBeforePause = controller?.value.isPlaying ?? false;
+      if (_wasPlayingBeforePause && controller != null) {
+        unawaited(_pausePlayback(controller));
+      }
+    } else if (state == AppLifecycleState.resumed && _wasPlayingBeforePause) {
+      _wasPlayingBeforePause = false;
+      if (controller != null) unawaited(_resumePlayback(controller));
+    }
+  }
+
+  Future<void> _resumePlayback(VideoPlayerController controller) async {
+    try {
+      await controller.play();
+    } catch (error) {
+      _showPlaybackError(error.toString());
+    }
+  }
+
+  Future<void> _pausePlayback(VideoPlayerController controller) async {
+    try {
+      await controller.pause();
+    } catch (error) {
+      _showPlaybackError(error.toString());
+    }
+  }
+
+  void _onControllerUpdate(VideoPlayerController controller) {
+    if (!mounted || !identical(controller, _controller)) return;
+    final value = controller.value;
+    if (value.hasError) {
+      _showPlaybackError(value.errorDescription);
+      return;
+    }
+    final isBuffering = value.isBuffering;
     if (isBuffering != _isBuffering) {
       setState(() => _isBuffering = isBuffering);
+    }
+    if (isBuffering) {
+      _bufferingTimer ??= Timer(const Duration(seconds: 30), () {
+        _showPlaybackError('The stream is stuck buffering. Retry the stream.');
+      });
+    } else {
+      _bufferingTimer?.cancel();
+      _bufferingTimer = null;
+    }
+  }
+
+  void _showPlaybackError(String? description) {
+    if (!mounted || _error != null) return;
+    _bufferingTimer?.cancel();
+    _bufferingTimer = null;
+    setState(() {
+      _initializing = false;
+      _isBuffering = false;
+      _error = (description == null || description.isEmpty)
+          ? 'Playback failed. Check the stream and retry.'
+          : 'Playback failed: $description';
+    });
+    final controller = _controller;
+    if (controller != null && !_initializing) {
+      unawaited(_releaseController(controller));
+    }
+  }
+
+  Future<void> _releaseController(VideoPlayerController controller) async {
+    final listener = _controllerListeners.remove(controller);
+    if (listener != null) controller.removeListener(listener);
+    final initialization = _initializations[controller];
+    if (identical(_controller, controller)) {
+      _controller = null;
+    }
+    _initializations.remove(controller);
+    await _disposeWhenReady(controller, initialization);
+  }
+
+  Future<void> _disposeWhenReady(
+    VideoPlayerController controller,
+    Future<void>? initialization,
+  ) async {
+    if (_hasPlatformPlayer(controller)) {
+      await controller.dispose();
+    } else if (initialization != null) {
+      unawaited(
+        initialization.then<void>((_) async {
+          if (_hasPlatformPlayer(controller)) await controller.dispose();
+        }, onError: (Object _) {}),
+      );
+    }
+  }
+
+  bool _hasPlatformPlayer(VideoPlayerController controller) {
+    // Avoid dispose waiting forever if native player creation failed before it received an ID.
+    // ignore: invalid_use_of_visible_for_testing_member
+    return controller.playerId >= 0;
+  }
+
+  Future<void> _retry() async {
+    if (_retrying) return;
+    _retrying = true;
+    final oldController = _controller;
+    ++_loadGeneration;
+    _bufferingTimer?.cancel();
+    _bufferingTimer = null;
+    try {
+      if (oldController != null) {
+        await _releaseController(oldController);
+      }
+      if (!mounted) return;
+      setState(() {
+        _error = null;
+        _initializing = true;
+        _isBuffering = false;
+      });
+      await _initPlayer();
+    } finally {
+      _retrying = false;
+    }
+  }
+
+  Future<void> _setFullscreen(bool fullscreen) async {
+    setState(() => _isFullscreen = fullscreen);
+    await SystemChrome.setPreferredOrientations(
+      fullscreen
+          ? [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]
+          : [DeviceOrientation.portraitUp],
+    );
+    await SystemChrome.setEnabledSystemUIMode(
+      fullscreen ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
+    );
+  }
+
+  Future<void> _shareStream() async {
+    try {
+      await Share.share(
+        'Watch ${widget.channel.name}: ${widget.channel.url}',
+        subject: widget.channel.name,
+      );
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to share this stream.')),
+        );
+      }
     }
   }
 
   @override
   void dispose() {
+    ++_loadGeneration;
+    _bufferingTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    _controller.removeListener(_onControllerUpdate);
-    _controller.dispose();
+    final controller = _controller;
+    if (controller != null) {
+      _controller = null;
+      final listener = _controllerListeners.remove(controller);
+      if (listener != null) controller.removeListener(listener);
+      final initialization = _initializations.remove(controller);
+      unawaited(_disposeWhenReady(controller, initialization));
+    }
+    for (final pendingController in _controllerListeners.keys.toList()) {
+      final listener = _controllerListeners.remove(pendingController)!;
+      pendingController.removeListener(listener);
+      final initialization = _initializations.remove(pendingController);
+      unawaited(_disposeWhenReady(pendingController, initialization));
+    }
     super.dispose();
   }
 
@@ -87,14 +300,25 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
 
-  void _seekBy(Duration duration) {
-    final newPosition = _controller.value.position + duration;
+  Future<void> _seekBy(Duration duration) async {
+    final controller = _controller;
+    if (controller == null ||
+        !controller.value.isInitialized ||
+        controller.value.duration <= Duration.zero) {
+      return;
+    }
+    final newPosition = controller.value.position + duration;
     final clamped = newPosition < Duration.zero
         ? Duration.zero
-        : newPosition > _controller.value.duration
-            ? _controller.value.duration
-            : newPosition;
-    _controller.seekTo(clamped);
+        : newPosition > controller.value.duration
+        ? controller.value.duration
+        : newPosition;
+    try {
+      await controller.seekTo(clamped);
+    } catch (error) {
+      _showPlaybackError(error.toString());
+      return;
+    }
     setState(() {
       if (duration.isNegative) {
         _seekBackward = duration.inSeconds.abs();
@@ -110,57 +334,26 @@ class _PlayerScreenState extends State<PlayerScreen> {
     });
   }
 
-  Future<void> _downloadStream() async {
-    if (_isDownloading) return;
-    setState(() => _isDownloading = true);
+  Future<void> _togglePlayback() async {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
     try {
-      final directory = await getTemporaryDirectory();
-      final fileName = '${widget.channel.name}_${DateTime.now().millisecondsSinceEpoch}.m3u8';
-      final filePath = '${directory.path}/$fileName';
-      // Note: This is a simplified download - in real app you'd use HTTP client
-      // to actually download the stream and save it locally
-      await Future.delayed(const Duration(seconds: 2));
-      if (!mounted) return;
-      setState(() {
-        _isDownloading = false;
-      });
-      // Show share option after download
-      _showDownloadCompleteDialog(filePath);
-    } catch (e) {
-      if (mounted) setState(() => _isDownloading = false);
+      if (controller.value.isPlaying) {
+        await controller.pause();
+      } else {
+        await controller.play();
+      }
+      if (mounted) setState(() {});
+    } catch (error) {
+      _showPlaybackError(error.toString());
     }
-  }
-
-  void _showDownloadCompleteDialog(String filePath) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A24),
-        title: const Text('Download Complete', style: TextStyle(color: Colors.white)),
-        content: Text(
-          'Stream saved to $filePath. You can share it with others!',
-          style: const TextStyle(color: Colors.white70),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('OK', style: TextStyle(color: Colors.white)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFE50914)),
-            onPressed: () {
-              Navigator.pop(context);
-              Share.share('Check out this IPTV stream: $filePath');
-            },
-            child: const Text('Share', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final controller = _controller;
+    final value = controller?.value;
+    final hasDuration = value != null && value.duration > Duration.zero;
     return Scaffold(
       backgroundColor: Colors.black,
       body: GestureDetector(
@@ -168,13 +361,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            if (!_initializing && _error == null)
+            if (!_initializing &&
+                _error == null &&
+                controller != null &&
+                value != null)
               Center(
                 child: AspectRatio(
-                  aspectRatio: _controller.value.aspectRatio == 0
+                  aspectRatio: value.aspectRatio <= 0
                       ? 16 / 9
-                      : _controller.value.aspectRatio,
-                  child: VideoPlayer(_controller),
+                      : value.aspectRatio,
+                  child: VideoPlayer(controller),
                 ),
               ),
             if (_initializing)
@@ -184,8 +380,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   children: [
                     CircularProgressIndicator(color: Color(0xFFE50914)),
                     SizedBox(height: 16),
-                    Text('Loading stream...',
-                        style: TextStyle(color: Colors.white54)),
+                    Text(
+                      'Loading stream...',
+                      style: TextStyle(color: Colors.white54),
+                    ),
                   ],
                 ),
               ),
@@ -198,27 +396,28 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.error_outline, color: Colors.white, size: 48),
+                    const Icon(
+                      Icons.error_outline,
+                      color: Colors.white,
+                      size: 48,
+                    ),
                     const SizedBox(height: 12),
                     Text(_error!, style: const TextStyle(color: Colors.white)),
                     const SizedBox(height: 12),
                     ElevatedButton(
-                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFE50914)),
-                      onPressed: () {
-                        setState(() {
-                          _error = null;
-                          _initializing = true;
-                        });
-                        _controller.dispose();
-                        _initPlayer();
-                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFE50914),
+                      ),
+                      onPressed: _retry,
                       child: const Text('Retry'),
                     ),
                     const SizedBox(height: 8),
                     TextButton(
                       onPressed: () => Navigator.pop(context),
-                      child: const Text('Go Back',
-                          style: TextStyle(color: Colors.white54)),
+                      child: const Text(
+                        'Go Back',
+                        style: TextStyle(color: Colors.white54),
+                      ),
                     ),
                   ],
                 ),
@@ -246,7 +445,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 child: Column(
                   children: [
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
                       decoration: BoxDecoration(
                         gradient: LinearGradient(
                           begin: Alignment.topCenter,
@@ -257,7 +459,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       child: Row(
                         children: [
                           IconButton(
-                            icon: const Icon(Icons.arrow_back, color: Colors.white),
+                            icon: const Icon(
+                              Icons.arrow_back,
+                              color: Colors.white,
+                            ),
                             onPressed: () => Navigator.pop(context),
                           ),
                           Expanded(
@@ -272,18 +477,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
                             ),
                           ),
                           IconButton(
-                            icon: const Icon(Icons.cast, color: Colors.white),
-                            onPressed: () {},
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.more_vert, color: Colors.white),
-                            onPressed: () => _showMoreOptions(context),
+                            tooltip: 'Share stream',
+                            icon: const Icon(Icons.share, color: Colors.white),
+                            onPressed: _shareStream,
                           ),
                         ],
                       ),
                     ),
                     const Spacer(),
-                    if (!_initializing)
+                    if (!_initializing && controller != null && value != null)
                       Center(
                         child: Container(
                           decoration: BoxDecoration(
@@ -293,26 +495,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           child: IconButton(
                             iconSize: 56,
                             icon: Icon(
-                              _controller.value.isPlaying
-                                  ? Icons.pause
-                                  : Icons.play_arrow,
+                              value.isPlaying ? Icons.pause : Icons.play_arrow,
                               color: Colors.white,
                             ),
-                            onPressed: () {
-                              setState(() {
-                                _controller.value.isPlaying
-                                    ? _controller.pause()
-                                    : _controller.play();
-                              });
-                            },
+                            onPressed: _togglePlayback,
                           ),
                         ),
                       ),
                     const Spacer(),
-                    if (!_initializing)
+                    if (!_initializing && controller != null && value != null)
                       Container(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 8),
+                          horizontal: 16,
+                          vertical: 8,
+                        ),
                         decoration: BoxDecoration(
                           gradient: LinearGradient(
                             begin: Alignment.bottomCenter,
@@ -322,91 +518,117 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         ),
                         child: Column(
                           children: [
-                            Row(
-                              children: [
-                                Text(
-                                  _formatDuration(_controller.value.position),
-                                  style: const TextStyle(
-                                      color: Colors.white, fontSize: 12),
-                                ),
-                                Expanded(
-                                  child: SliderTheme(
-                                    data: SliderThemeData(
-                                      trackHeight: 3,
-                                      thumbShape: const RoundSliderThumbShape(
-                                        enabledThumbRadius: 6,
-                                      ),
-                                      overlayShape: const RoundSliderOverlayShape(
-                                        overlayRadius: 12,
-                                      ),
-                                      activeTrackColor: const Color(0xFFE50914),
-                                      inactiveTrackColor: Colors.white24,
-                                      thumbColor: const Color(0xFFE50914),
-                                    ),
-                                    child: Slider(
-                                      value: _controller.value.position
-                                          .inMilliseconds
-                                          .clamp(
-                                            0,
-                                            _controller.value.duration
-                                                .inMilliseconds
-                                                .toDouble(),
-                                          )
-                                          .toDouble(),
-                                      max: _controller.value.duration.inMilliseconds
-                                          .toDouble(),
-                                      onChanged: (v) {
-                                        _controller.seekTo(
-                                          Duration(milliseconds: v.toInt()),
-                                        );
-                                      },
+                            if (hasDuration)
+                              Row(
+                                children: [
+                                  Text(
+                                    _formatDuration(value.position),
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 12,
                                     ),
                                   ),
+                                  Expanded(
+                                    child: SliderTheme(
+                                      data: SliderThemeData(
+                                        trackHeight: 3,
+                                        thumbShape: const RoundSliderThumbShape(
+                                          enabledThumbRadius: 6,
+                                        ),
+                                        overlayShape:
+                                            const RoundSliderOverlayShape(
+                                              overlayRadius: 12,
+                                            ),
+                                        activeTrackColor: const Color(
+                                          0xFFE50914,
+                                        ),
+                                        inactiveTrackColor: Colors.white24,
+                                        thumbColor: const Color(0xFFE50914),
+                                      ),
+                                      child: Slider(
+                                        value: value.position.inMilliseconds
+                                            .clamp(
+                                              0,
+                                              value.duration.inMilliseconds,
+                                            )
+                                            .toDouble(),
+                                        max: value.duration.inMilliseconds
+                                            .toDouble(),
+                                        onChanged: (position) {
+                                          controller.seekTo(
+                                            Duration(
+                                              milliseconds: position.toInt(),
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    ),
+                                  ),
+                                  Text(
+                                    _formatDuration(value.duration),
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ],
+                              )
+                            else
+                              const Padding(
+                                padding: EdgeInsets.symmetric(vertical: 8),
+                                child: Text(
+                                  'LIVE',
+                                  style: TextStyle(
+                                    color: Colors.white70,
+                                    fontWeight: FontWeight.bold,
+                                    letterSpacing: 1,
+                                  ),
                                 ),
-                                Text(
-                                  _formatDuration(_controller.value.duration),
-                                  style: const TextStyle(
-                                      color: Colors.white, fontSize: 12),
-                                ),
-                              ],
-                            ),
+                              ),
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                               children: [
-                                IconButton(
-                                  icon: const Icon(Icons.replay_10,
-                                      color: Colors.white),
-                                  onPressed: () => _seekBy(const Duration(seconds: -10)),
-                                ),
+                                if (hasDuration)
+                                  IconButton(
+                                    tooltip: 'Rewind 10 seconds',
+                                    icon: const Icon(
+                                      Icons.replay_10,
+                                      color: Colors.white,
+                                    ),
+                                    onPressed: () =>
+                                        _seekBy(const Duration(seconds: -10)),
+                                  ),
                                 IconButton(
                                   icon: Icon(
-                                    _controller.value.isPlaying
+                                    value.isPlaying
                                         ? Icons.pause
                                         : Icons.play_arrow,
                                     color: Colors.white,
                                   ),
-                                  onPressed: () {
-                                    setState(() {
-                                      _controller.value.isPlaying
-                                          ? _controller.pause()
-                                          : _controller.play();
-                                    });
-                                  },
+                                  onPressed: _togglePlayback,
                                 ),
+                                if (hasDuration)
+                                  IconButton(
+                                    tooltip: 'Forward 10 seconds',
+                                    icon: const Icon(
+                                      Icons.forward_10,
+                                      color: Colors.white,
+                                    ),
+                                    onPressed: () =>
+                                        _seekBy(const Duration(seconds: 10)),
+                                  ),
                                 IconButton(
-                                  icon: const Icon(Icons.forward_10,
-                                      color: Colors.white),
-                                  onPressed: () => _seekBy(const Duration(seconds: 10)),
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.download,
-                                      color: Colors.white),
-                                  onPressed: _downloadStream,
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.fullscreen,
-                                      color: Colors.white),
-                                  onPressed: () {},
+                                  tooltip: _isFullscreen
+                                      ? 'Exit fullscreen'
+                                      : 'Enter fullscreen',
+                                  icon: Icon(
+                                    _isFullscreen
+                                        ? Icons.fullscreen_exit
+                                        : Icons.fullscreen,
+                                    color: Colors.white,
+                                  ),
+                                  onPressed: () =>
+                                      _setFullscreen(!_isFullscreen),
                                 ),
                               ],
                             ),
@@ -416,53 +638,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   ],
                 ),
               ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _showMoreOptions(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: const Color(0xFF1A1A24),
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.download, color: Colors.white),
-              title: const Text('Download Stream', style: TextStyle(color: Colors.white)),
-              onTap: () {
-                Navigator.pop(context);
-                _downloadStream();
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.share, color: Colors.white),
-              title: const Text('Share Stream', style: TextStyle(color: Colors.white)),
-              onTap: () {
-                Navigator.pop(context);
-                // Share functionality
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.add, color: Colors.white),
-              title: const Text('Add to Favorites', style: TextStyle(color: Colors.white)),
-              onTap: () {
-                Navigator.pop(context);
-                // Add to favorites
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.history, color: Colors.white),
-              title: const Text('Watch History', style: TextStyle(color: Colors.white)),
-              onTap: () {
-                Navigator.pop(context);
-                // Show watch history
-              },
-            ),
           ],
         ),
       ),
